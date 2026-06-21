@@ -459,6 +459,12 @@ async function attemptTurnstileCdp(page) {
                     continue;
                 }
 
+                // 滚动到 iframe 确保可见
+                try {
+                    await iframeElement.scrollIntoViewIfNeeded();
+                    await page.waitForTimeout(500);
+                } catch (e) { }
+
                 const box = await iframeElement.boundingBox();
                 if (!box) {
                     console.log('>> ✗ Cannot get iframe bounding box');
@@ -491,9 +497,21 @@ async function attemptTurnstileCdp(page) {
                     await new Promise(r => setTimeout(r, 2 + Math.random() * 3));
                 }
 
-                // 4. 悬停在目标位置上
+                // 4. 悬停在目标位置上，并做一些细微移动
                 console.log('>> Hovering over checkbox...');
                 await page.waitForTimeout(150 + Math.random() * 200);
+
+                // 悬停时的微小抖动（模拟真实鼠标）
+                for (let j = 0; j < 3; j++) {
+                    const jitterX = clickX + (Math.random() - 0.5) * 2;
+                    const jitterY = clickY + (Math.random() - 0.5) * 2;
+                    await client.send('Input.dispatchMouseEvent', {
+                        type: 'mouseMoved',
+                        x: jitterX,
+                        y: jitterY
+                    });
+                    await new Promise(r => setTimeout(r, 20 + Math.random() * 30));
+                }
 
                 // 5. 执行点击
                 console.log('>> Clicking...');
