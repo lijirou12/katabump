@@ -9,7 +9,7 @@ const http = require('http');
 // 启用 stealth 插件
 chromium.use(stealth);
 
-const CHROME_PATH = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const CHROME_PATH = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const USER_DATA_DIR = path.join(__dirname, 'ChromeData_Katabump');
 const DEBUG_PORT = 9222;
 const HEADLESS = false;
@@ -34,7 +34,7 @@ if (HTTP_PROXY) {
 }
 
 
-// --- injected.js 核心逻辑 ---
+// --- injected.js 核心逻辑 (增强版) ---
 // 这个脚本会被注入到每个 Frame 中。它劫持 attachShadow 以捕获 Turnstile 的 checkbox，
 // 计算其相对于 Frame 视口的位置比例，并存入 window.__turnstile_data 供外部读取。
 const INJECTED_SCRIPT = `
@@ -42,40 +42,73 @@ const INJECTED_SCRIPT = `
     // 只在 iframe 中运行（Turnstile 通常在 iframe 里）
     if (window.self === window.top) return;
 
-    // 1. 模拟鼠标屏幕坐标 (尝试保留这个优化)
+    console.log('[Turnstile Injected] Script loaded in iframe:', window.location.href);
+
+    // 1. 模拟鼠标屏幕坐标
     try {
         function getRandomInt(min, max) {
             return Math.floor(Math.random() * (max - min + 1)) + min;
         }
         let screenX = getRandomInt(800, 1200);
         let screenY = getRandomInt(400, 600);
-        
-        Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
-        Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
-    } catch (e) { 
-        // 忽略错误，如果不允许修改也没关系，不影响主流程
+
+        Object.defineProperty(MouseEvent.prototype, 'screenX', {
+            get: function() { return screenX; },
+            configurable: true
+        });
+        Object.defineProperty(MouseEvent.prototype, 'screenY', {
+            get: function() { return screenY; },
+            configurable: true
+        });
+    } catch (e) {
+        console.log('[Turnstile Injected] screenX/Y override failed:', e.message);
     }
 
-    // 2. 简单的 attachShadow Hook (回退到这个版本，确保能找到元素)
+    // 2. 多种选择器查找 Turnstile checkbox
+    function findTurnstileCheckbox(root) {
+        const selectors = [
+            'input[type="checkbox"]',
+            'input[name="cf-turnstile-response"]',
+            'input.cf-turnstile-response',
+            '[role="checkbox"]',
+            'input'
+        ];
+
+        for (const selector of selectors) {
+            const element = root.querySelector(selector);
+            if (element) {
+                console.log('[Turnstile Injected] Found element with selector:', selector);
+                return element;
+            }
+        }
+        return null;
+    }
+
+    // 3. attachShadow Hook
     try {
         const originalAttachShadow = Element.prototype.attachShadow;
-        
+
         Element.prototype.attachShadow = function(init) {
             const shadowRoot = originalAttachShadow.call(this, init);
-            
+
             if (shadowRoot) {
+                console.log('[Turnstile Injected] Shadow root attached');
+
                 const checkAndReport = () => {
-                    // 尝试在 Shadow Root 中查找 checkbox
-                    const checkbox = shadowRoot.querySelector('input[type="checkbox"]');
+                    const checkbox = findTurnstileCheckbox(shadowRoot);
                     if (checkbox) {
                         const rect = checkbox.getBoundingClientRect();
+                        console.log('[Turnstile Injected] Checkbox rect:', rect);
+
                         // 确保元素已渲染且可见
                         if (rect.width > 0 && rect.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
                             const xRatio = (rect.left + rect.width / 2) / window.innerWidth;
                             const yRatio = (rect.top + rect.height / 2) / window.innerHeight;
-                            
+
+                            console.log('[Turnstile Injected] ✓ Checkbox found! Ratios:', { xRatio, yRatio });
+
                             // 暴露数据给 Playwright
-                            window.__turnstile_data = { xRatio, yRatio };
+                            window.__turnstile_data = { xRatio, yRatio, timestamp: Date.now() };
                             return true;
                         }
                     }
@@ -89,13 +122,51 @@ const INJECTED_SCRIPT = `
                         if (checkAndReport()) observer.disconnect();
                     });
                     observer.observe(shadowRoot, { childList: true, subtree: true });
+
+                    // 也定期检查（防止 observer 漏掉）
+                    const interval = setInterval(() => {
+                        if (checkAndReport()) {
+                            clearInterval(interval);
+                            observer.disconnect();
+                        }
+                    }, 500);
+
+                    // 30秒后停止
+                    setTimeout(() => {
+                        clearInterval(interval);
+                        observer.disconnect();
+                    }, 30000);
                 }
             }
             return shadowRoot;
         };
+        console.log('[Turnstile Injected] attachShadow hook installed');
     } catch (e) {
-        console.error('[Injected] Error hooking attachShadow:', e);
+        console.error('[Turnstile Injected] Error hooking attachShadow:', e);
     }
+
+    // 4. 也尝试直接在 document 上查找（有些情况下不在 shadow root 里）
+    function checkDocument() {
+        const checkbox = findTurnstileCheckbox(document);
+        if (checkbox) {
+            const rect = checkbox.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                const xRatio = (rect.left + rect.width / 2) / window.innerWidth;
+                const yRatio = (rect.top + rect.height / 2) / window.innerHeight;
+                console.log('[Turnstile Injected] ✓ Found in document! Ratios:', { xRatio, yRatio });
+                window.__turnstile_data = { xRatio, yRatio, timestamp: Date.now() };
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 定期检查 document
+    const docInterval = setInterval(() => {
+        if (checkDocument()) clearInterval(docInterval);
+    }, 500);
+
+    setTimeout(() => clearInterval(docInterval), 30000);
 })();
 `;
 
@@ -204,36 +275,104 @@ function getUsers() {
 }
 
 /**
+ * 生成贝塞尔曲线路径点，模拟自然鼠标移动
+ */
+function generateBezierPath(startX, startY, endX, endY, steps = 20) {
+    const points = [];
+    // 生成两个随机控制点
+    const cp1x = startX + (endX - startX) * (0.25 + Math.random() * 0.25);
+    const cp1y = startY + (endY - startY) * (0.1 + Math.random() * 0.3);
+    const cp2x = startX + (endX - startX) * (0.5 + Math.random() * 0.25);
+    const cp2y = startY + (endY - startY) * (0.7 + Math.random() * 0.2);
+
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const mt = 1 - t;
+        const mt2 = mt * mt;
+        const mt3 = mt2 * mt;
+        const t2 = t * t;
+        const t3 = t2 * t;
+
+        const x = mt3 * startX + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t3 * endX;
+        const y = mt3 * startY + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t3 * endY;
+        points.push({ x, y });
+    }
+    return points;
+}
+
+/**
  * 核心功能：遍历所有 Frames，查找被注入脚本标记的 Turnstile 坐标，
  * 计算绝对屏幕坐标，并使用 CDP 发送原生鼠标点击事件。
+ * 增强版：添加自然鼠标移动轨迹和悬停
  */
 async function attemptTurnstileCdp(page) {
     const frames = page.frames();
-    for (const frame of frames) {
+    console.log(`>> Checking ${frames.length} frames for Turnstile...`);
+
+    for (let i = 0; i < frames.length; i++) {
+        const frame = frames[i];
         try {
+            const frameUrl = frame.url();
+            // 优先检查 Cloudflare 域名的 iframe
+            if (!frameUrl.includes('cloudflare') && !frameUrl.includes('turnstile')) {
+                continue;
+            }
+
+            console.log(`>> Frame ${i}: ${frameUrl.substring(0, 60)}...`);
+
             // 检查当前 Frame 是否捕获到了 Turnstile 数据
             const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
 
             if (data) {
-                console.log('>> Found Turnstile in frame. Ratios:', data);
+                console.log('>> ✓ Found Turnstile checkbox! Ratios:', data);
 
                 // 获取 iframe 元素在主页面中的位置
                 const iframeElement = await frame.frameElement();
-                if (!iframeElement) continue;
+                if (!iframeElement) {
+                    console.log('>> ✗ Cannot get iframe element');
+                    continue;
+                }
 
                 const box = await iframeElement.boundingBox();
-                if (!box) continue;
+                if (!box) {
+                    console.log('>> ✗ Cannot get iframe bounding box');
+                    continue;
+                }
 
                 // 计算绝对坐标：iframe 左上角 + (iframe 宽/高 * 比例)
                 const clickX = box.x + (box.width * data.xRatio);
                 const clickY = box.y + (box.height * data.yRatio);
 
-                console.log(`>> Calculated absolute click coordinates: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
+                console.log(`>> Target coordinates: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`);
+                console.log(`>> Iframe box: x=${box.x.toFixed(2)}, y=${box.y.toFixed(2)}, w=${box.width.toFixed(2)}, h=${box.height.toFixed(2)}`);
 
-                // 创建 CDP 会话并发送点击命令
+                // 创建 CDP 会话
                 const client = await page.context().newCDPSession(page);
 
-                // 1. Mouse Pressed
+                // 1. 先移动鼠标到一个随机起始位置
+                const startX = clickX + (Math.random() - 0.5) * 200;
+                const startY = clickY + (Math.random() - 0.5) * 200;
+
+                // 2. 生成贝塞尔曲线路径
+                console.log('>> Simulating human-like mouse movement...');
+                const path = generateBezierPath(startX, startY, clickX, clickY, 25);
+
+                // 3. 沿路径移动鼠标
+                for (const point of path) {
+                    await client.send('Input.dispatchMouseEvent', {
+                        type: 'mouseMoved',
+                        x: point.x,
+                        y: point.y
+                    });
+                    await new Promise(r => setTimeout(r, 2 + Math.random() * 3)); // 每步2-5ms
+                }
+
+                // 4. 悬停在目标位置上
+                console.log('>> Hovering over checkbox...');
+                await page.waitForTimeout(150 + Math.random() * 200); // 150-350ms 悬停
+
+                // 5. 执行点击：MousePressed
+                console.log('>> Clicking...');
                 await client.send('Input.dispatchMouseEvent', {
                     type: 'mousePressed',
                     x: clickX,
@@ -242,10 +381,10 @@ async function attemptTurnstileCdp(page) {
                     clickCount: 1
                 });
 
-                // 模拟人类点击持续时间 (50ms - 150ms)
-                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                // 6. 模拟人类点击持续时间 (80-180ms)
+                await new Promise(r => setTimeout(r, 80 + Math.random() * 100));
 
-                // 2. Mouse Released
+                // 7. MouseReleased
                 await client.send('Input.dispatchMouseEvent', {
                     type: 'mouseReleased',
                     x: clickX,
@@ -254,12 +393,13 @@ async function attemptTurnstileCdp(page) {
                     clickCount: 1
                 });
 
-                console.log('>> CDP Click sent successfully.');
+                console.log('>> ✓ Click sequence completed successfully!');
                 await client.detach();
                 return true; // 成功点击
             }
         } catch (e) {
             // 忽略 Frame 访问错误（跨域等）
+            console.log(`>> Frame ${i} error: ${e.message}`);
         }
     }
     return false;
