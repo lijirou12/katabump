@@ -229,11 +229,27 @@ async function checkProxy() {
 
 function checkPort(port) {
     return new Promise((resolve) => {
-        const req = http.get(`http://localhost:${port}/json/version`, (res) => {
+        const net = require('net');
+        const socket = new net.Socket();
+
+        socket.setTimeout(2000);
+
+        socket.on('connect', () => {
+            socket.destroy();
             resolve(true);
         });
-        req.on('error', () => resolve(false));
-        req.end();
+
+        socket.on('timeout', () => {
+            socket.destroy();
+            resolve(false);
+        });
+
+        socket.on('error', () => {
+            socket.destroy();
+            resolve(false);
+        });
+
+        socket.connect(port, 'localhost');
     });
 }
 
@@ -312,14 +328,31 @@ async function launchChrome() {
     chrome.unref();
 
     console.log('正在等待 Chrome 初始化...');
-    for (let i = 0; i < 30; i++) {  // 从 20 增加到 30
+    for (let i = 0; i < 40; i++) {  // 从 30 增加到 40
+        // 先检查 TCP 端口
         if (await checkPort(DEBUG_PORT)) {
-            console.log('Chrome 已成功启动！');
-            break;
+            console.log(`端口 ${DEBUG_PORT} 已打开，检查 CDP 端点...`);
+            // 再检查 HTTP 端点
+            try {
+                const response = await new Promise((resolve) => {
+                    const req = http.get(`http://localhost:${DEBUG_PORT}/json/version`, (res) => {
+                        resolve(true);
+                    });
+                    req.on('error', () => resolve(false));
+                    req.setTimeout(3000, () => {
+                        req.destroy();
+                        resolve(false);
+                    });
+                });
+                if (response) {
+                    console.log('Chrome 已成功启动！');
+                    break;
+                }
+            } catch (e) { }
         }
         await new Promise(r => setTimeout(r, 1000));
         if (i % 5 === 4) {
-            console.log(`等待中... ${i + 1}/30 秒`);
+            console.log(`等待中... ${i + 1}/40 秒`);
         }
     }
 
@@ -331,6 +364,27 @@ async function launchChrome() {
             await new Promise((resolve) => {
                 exec('ps aux | grep chrome', (err, stdout) => {
                     console.error('Chrome 进程列表:', stdout);
+                    resolve();
+                });
+            });
+            // 最后尝试检查 HTTP 端点
+            console.error('尝试直接访问 CDP 端点...');
+            await new Promise((resolve) => {
+                const req = http.get(`http://localhost:${DEBUG_PORT}/json/version`, (res) => {
+                    let data = '';
+                    res.on('data', chunk => data += chunk);
+                    res.on('end', () => {
+                        console.error('CDP 响应:', data);
+                        resolve();
+                    });
+                });
+                req.on('error', (e) => {
+                    console.error('CDP 连接错误:', e.message);
+                    resolve();
+                });
+                req.setTimeout(5000, () => {
+                    req.destroy();
+                    console.error('CDP 连接超时');
                     resolve();
                 });
             });
