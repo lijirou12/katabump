@@ -244,6 +244,38 @@ async function launchChrome() {
         return;
     }
 
+    // 清理旧的用户数据目录
+    try {
+        const fs = require('fs');
+        if (fs.existsSync('/tmp/chrome_user_data')) {
+            console.log('清理旧的 Chrome 用户数据...');
+            require('child_process').execSync('rm -rf /tmp/chrome_user_data');
+        }
+    } catch (e) {
+        console.log('清理用户数据失败（可忽略）:', e.message);
+    }
+
+    // 检查 Chrome 是否存在
+    try {
+        const fs = require('fs');
+        if (!fs.existsSync(CHROME_PATH)) {
+            console.error(`Chrome 未找到: ${CHROME_PATH}`);
+            // 尝试查找其他可能的路径
+            const possiblePaths = [
+                '/usr/bin/google-chrome',
+                '/usr/bin/google-chrome-stable',
+                '/usr/bin/chromium',
+                '/usr/bin/chromium-browser'
+            ];
+            for (const path of possiblePaths) {
+                if (fs.existsSync(path)) {
+                    console.log(`找到替代 Chrome: ${path}`);
+                    break;
+                }
+            }
+        }
+    } catch (e) { }
+
     console.log(`正在启动 Chrome (路径: ${CHROME_PATH})...`);
 
     const args = [
@@ -255,6 +287,13 @@ async function launchChrome() {
         '--window-size=1280,720',
         '--no-sandbox',
         '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage', // 避免共享内存不足
+        '--disable-software-rasterizer',
+        '--disable-extensions',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-features=IsolateOrigins,site-per-process',
         '--user-data-dir=/tmp/chrome_user_data' // 必须指定用户数据目录，否则远程调试可能失败
     ];
 
@@ -273,13 +312,29 @@ async function launchChrome() {
     chrome.unref();
 
     console.log('正在等待 Chrome 初始化...');
-    for (let i = 0; i < 20; i++) {
-        if (await checkPort(DEBUG_PORT)) break;
+    for (let i = 0; i < 30; i++) {  // 从 20 增加到 30
+        if (await checkPort(DEBUG_PORT)) {
+            console.log('Chrome 已成功启动！');
+            break;
+        }
         await new Promise(r => setTimeout(r, 1000));
+        if (i % 5 === 4) {
+            console.log(`等待中... ${i + 1}/30 秒`);
+        }
     }
 
     if (!await checkPort(DEBUG_PORT)) {
         console.error('Chrome 无法在端口 ' + DEBUG_PORT + ' 上启动');
+        console.error('尝试检查 Chrome 进程...');
+        try {
+            const { exec } = require('child_process');
+            await new Promise((resolve) => {
+                exec('ps aux | grep chrome', (err, stdout) => {
+                    console.error('Chrome 进程列表:', stdout);
+                    resolve();
+                });
+            });
+        } catch (e) { }
         throw new Error('Chrome 启动失败');
     }
 }
