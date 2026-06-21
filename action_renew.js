@@ -507,35 +507,45 @@ async function attemptTurnstileCdp(page) {
                 // --- Cloudflare Turnstile Bypass for Login ---
                 console.log('   >> 正在登录前检查 Turnstile (使用 CDP 绕过)...');
                 let cdpClickResult = false;
-                for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
+                for (let findAttempt = 0; findAttempt < 30; findAttempt++) {
                     cdpClickResult = await attemptTurnstileCdp(page);
-                    if (cdpClickResult) break;
+                    if (cdpClickResult) {
+                        console.log(`   >> CDP 点击已发送，等待 Cloudflare 验证...`);
+
+                        // 等待验证成功的标志
+                        let verifySuccess = false;
+                        for (let verifySec = 0; verifySec < 12; verifySec++) {
+                            const frames = page.frames();
+                            for (const f of frames) {
+                                if (f.url().includes('cloudflare')) {
+                                    try {
+                                        if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) {
+                                            console.log('   >> ✅ 登录前 Turnstile 验证成功！');
+                                            verifySuccess = true;
+                                            break;
+                                        }
+                                    } catch (e) { }
+                                }
+                            }
+                            if (verifySuccess) break;
+                            await page.waitForTimeout(1000);
+                        }
+
+                        if (verifySuccess) {
+                            break; // 验证成功，跳出查找循环
+                        } else {
+                            console.log('   >> ⚠ 点击后未检测到 Success 标志，继续尝试...');
+                            cdpClickResult = false; // 重置，继续查找
+                        }
+                    }
+                    console.log(`   >> [尝试 ${findAttempt + 1}/30] 等待 Turnstile...`);
                     await page.waitForTimeout(1000);
                 }
 
                 if (cdpClickResult) {
-                    console.log('   >> 登录 CDP 点击生效。正在等待最多 10秒 Cloudflare 成功标志...');
-                    for (let waitSec = 0; waitSec < 10; waitSec++) {
-                        const frames = page.frames();
-                        let isSuccess = false;
-                        for (const f of frames) {
-                            if (f.url().includes('cloudflare')) {
-                                try {
-                                    if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) {
-                                        isSuccess = true;
-                                        break;
-                                    }
-                                } catch (e) { }
-                            }
-                        }
-                        if (isSuccess) {
-                            console.log('   >> 登录前 Turnstile 验证成功。');
-                            break;
-                        }
-                        await page.waitForTimeout(1000);
-                    }
+                    console.log('   >> ✅ 登录 Turnstile 验证完成！');
                 } else {
-                    console.log('   >> 登录前未检测到或未点击 Turnstile，继续操作...');
+                    console.log('   >> ⚠ 登录 Turnstile 未验证成功，尝试继续登录...');
                 }
                 // --------------------------------------------
 

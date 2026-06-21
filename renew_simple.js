@@ -282,9 +282,38 @@ function getUsers() {
                 // 登录前的 Turnstile
                 console.log('🔍 检查登录页 Turnstile...');
                 let cdpClickResult = false;
-                for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
+                for (let findAttempt = 0; findAttempt < 30; findAttempt++) {
                     cdpClickResult = await attemptTurnstileCdp(page);
-                    if (cdpClickResult) break;
+                    if (cdpClickResult) {
+                        console.log('   >> CDP 点击已发送，等待 Cloudflare 验证...');
+
+                        // 等待验证成功的标志
+                        let verifySuccess = false;
+                        for (let verifySec = 0; verifySec < 12; verifySec++) {
+                            const frames = page.frames();
+                            for (const f of frames) {
+                                if (f.url().includes('cloudflare')) {
+                                    try {
+                                        if (await f.getByText('Success!', { exact: false }).isVisible({ timeout: 500 })) {
+                                            console.log('   >> ✅ 登录前 Turnstile 验证成功！');
+                                            verifySuccess = true;
+                                            break;
+                                        }
+                                    } catch (e) { }
+                                }
+                            }
+                            if (verifySuccess) break;
+                            await page.waitForTimeout(1000);
+                        }
+
+                        if (verifySuccess) {
+                            break; // 验证成功，跳出查找循环
+                        } else {
+                            console.log('   >> ⚠ 点击后未检测到 Success 标志，继续尝试...');
+                            cdpClickResult = false; // 重置，继续查找
+                        }
+                    }
+                    console.log(`   >> [尝试 ${findAttempt + 1}/30] 等待 Turnstile...`);
                     await page.waitForTimeout(1000);
                 }
 
